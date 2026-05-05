@@ -11,14 +11,13 @@ A reusable Go backend project skeleton — no framework lock-in, plug in your ow
 ├── docker/              # Docker Compose for local services
 ├── docs/                # Specifications and plans
 ├── internal/
-│   ├── auth/            # Auth provider pattern (README)
+│   ├── auth/            # Auth provider + authorization policy (README)
 │   ├── configs/         # Typed config loading from env
 │   ├── core/
 │   │   ├── enums/       # Shared enum types + context keys
 │   │   ├── errors/      # AppError + sentinel errors + error mapping
 │   │   ├── response/    # API response envelope + pagination
-│   │   ├── logger/      # Logger pattern (README)
-│   │   └── policy/      # Authorization pattern (README + Casbin rec)
+│   │   └── logger/      # Logger pattern (README)
 │   ├── database/        # Query builder, models, migrations
 │   ├── middleware/       # Auth & role middleware pattern (README)
 │   ├── modules/         # Domain features (README patterns)
