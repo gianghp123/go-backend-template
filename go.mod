@@ -1,4 +1,4 @@
-module github.com/your-org/your-project
+module your-project
 
 go 1.25
 

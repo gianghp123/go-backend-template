@@ -10,7 +10,18 @@
 
 ## Interface
 
+Repository interfaces are defined centrally in `internal/database/ports/`:
+
 ```go
+package ports
+
+import (
+    "context"
+    "github.com/your-org/your-project/internal/core/response"
+    "github.com/your-org/your-project/internal/database"
+    "github.com/your-org/your-project/internal/database/models"
+)
+
 type IExampleRepo interface {
     FindAll(ctx context.Context, query *database.Query) (*response.PaginatedResult[*models.Example], error)
     FindByID(ctx context.Context, id uint) (*models.Example, error)
@@ -22,12 +33,24 @@ type IExampleRepo interface {
 
 ## Implementation (GORM example)
 
+Implementations import the interface from `database/ports/`:
+
 ```go
+package repositories
+
+import (
+    "gorm.io/gorm"
+    "github.com/your-org/your-project/internal/database/ports"
+)
+
 type exampleRepo struct {
     db *gorm.DB
 }
 
-func NewExampleRepo(db *gorm.DB) IExampleRepo {
+// Compile-time interface check
+var _ ports.IExampleRepo = (*exampleRepo)(nil)
+
+func NewExampleRepo(db *gorm.DB) ports.IExampleRepo {
     return &exampleRepo{db: db}
 }
 
@@ -76,4 +99,5 @@ func (r *exampleRepo) Delete(ctx context.Context, id uint) error {
 - Use `errors.MapRepoError(err)` to normalize ORM errors into sentinel errors
 - `FindAll` returns `*response.PaginatedResult` with both data and meta
 - Keep the concrete struct unexported (`exampleRepo`) — only the interface is public
-- Constructor returns the interface type (`NewExampleRepo(...) IExampleRepo`)
+- Constructor returns the interface type from `ports` package
+- After implementing, register the repository in `internal/database/provider/provider.go`
