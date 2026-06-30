@@ -22,7 +22,7 @@ import (
     "github.com/your-org/your-project/internal/database/models"
 )
 
-type IExampleRepo interface {
+type ExampleRepository interface {
     FindAll(ctx context.Context, query *database.Query) (*response.PaginatedResult[*models.Example], error)
     FindByID(ctx context.Context, id uint) (*models.Example, error)
     Create(ctx context.Context, example *models.Example) error
@@ -48,9 +48,10 @@ type exampleRepo struct {
 }
 
 // Compile-time interface check
-var _ ports.IExampleRepo = (*exampleRepo)(nil)
+var _ ports.ExampleRepository = (*exampleRepo)(nil)
 
-func NewExampleRepo(db *gorm.DB) ports.IExampleRepo {
+// Constructor — returns concrete struct
+func NewRepo(db *gorm.DB) *exampleRepo {
     return &exampleRepo{db: db}
 }
 
@@ -99,5 +100,5 @@ func (r *exampleRepo) Delete(ctx context.Context, id uint) error {
 - Use `errors.MapRepoError(err)` to normalize ORM errors into sentinel errors
 - `FindAll` returns `*response.PaginatedResult` with both data and meta
 - Keep the concrete struct unexported (`exampleRepo`) — only the interface is public
-- Constructor returns the interface type from `ports` package
+- Constructor returns concrete struct, not the interface — callers accept the interface
 - After implementing, register the repository in `internal/database/provider/provider.go`

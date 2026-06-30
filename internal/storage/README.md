@@ -3,7 +3,7 @@
 **Purpose:** File/object storage abstraction — upload, download, delete.
 
 **What it can contain:**
-- `IStorageProvider` interface
+- `StorageProvider` interface
 - Provider implementations (S3, GCS, MinIO, local filesystem)
 - `Init()` factory that returns the chosen implementation
 - Presigned URL generation, multipart upload, CDN integration
@@ -11,7 +11,7 @@
 **Pattern:**
 
 ```go
-type IStorageProvider interface {
+type StorageProvider interface {
     Upload(ctx context.Context, path string, data io.Reader) (string, error)
     Delete(ctx context.Context, path string) error
     GetURL(ctx context.Context, path string) (string, error)

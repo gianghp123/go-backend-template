@@ -4,52 +4,75 @@
 
 ## Authentication
 
-**Pattern:** An `IAuthProvider` interface with `VerifyToken(ctx, token) (UserClaims, error)`. Implement once per provider (Firebase, Auth0, Supabase Auth, custom JWT) and swap in `Init()`.
+**Pattern:** An `AuthProvider` interface with `VerifyToken(ctx, token) (UserClaims, error)`. Implement once per provider (Firebase, Auth0, Supabase Auth, custom JWT) and swap in `Init()`.
 
-Auth middleware reads from `context.Context` — set by `middleware/auth`, consumed by policy functions and services.
+Auth middleware sets `userID` and `role` in `context.Context` — consumed by policy functions and services.
 
 ## Authorization
 
-### Simple enforcement (built-in)
+### Actor pattern (recommended)
 
-For most cases, inline checks are sufficient:
+The `Actor` struct bundles user identity (ID + role). Services extract it from context only when authorization is needed:
 
 ```go
-func EnforceRole(role enums.UserRole, allowedRoles ...enums.UserRole) *errors.AppError {
-    for _, r := range allowedRoles {
-        if role == r {
-            return nil
-        }
-    }
-    return errors.Forbidden("insufficient permissions")
+type Actor struct {
+    UserID string
+    Role   enums.UserRole
 }
 
-func EnforceOwnerOrAdmin(userID string, role enums.UserRole, resourceOwnerID string) *errors.AppError {
-    if role == enums.UserRoleAdmin {
+func ActorFromContext(ctx context.Context) (*Actor, error) {
+    userID := utils.GetCtx[string](ctx, enums.ContextKeyUserID)
+    if userID == "" {
+        return nil, ErrUnauthorized
+    }
+    role := utils.GetCtx[enums.UserRole](ctx, enums.ContextKeyUserRole)
+    return &Actor{UserID: userID, Role: role}, nil
+}
+```
+
+### Policy functions
+
+Pure functions — actor + resource owner => allow/deny:
+
+```go
+func CanMutate(actor *Actor, resourceOwnerID string) error {
+    if actor.Role == enums.UserRoleAdmin {
         return nil
     }
-    if userID == resourceOwnerID {
+    if actor.UserID == resourceOwnerID {
         return nil
     }
-    return errors.Forbidden("access denied")
+    return ErrForbidden
+}
+
+func CanRead(actor *Actor, resourceOwnerID string) error {
+    return CanMutate(actor, resourceOwnerID)
 }
 ```
 
 **Usage in services:**
 
 ```go
-func (s *exampleService) GetByID(ctx context.Context, body req.GetExampleReq) (*res.ExampleRes, *errors.AppError) {
-    userID := utils.GetCtx[string](ctx, enums.ContextKeyUserID)
-    role := utils.GetCtx[enums.UserRole](ctx, enums.ContextKeyUserRole)
-
-    item, err := s.repo.FindByID(ctx, body.ID)
+// Auth check — service uses ActorFromContext + CanMutate
+func (s *exampleService) Delete(ctx context.Context, id uint) *errors.AppError {
+    actor, err := auth.ActorFromContext(ctx)
     if err != nil {
-        return nil, mapError(err)
+        return errors.Unauthorized()
     }
-    if err := policy.EnforceOwnerOrAdmin(userID, role, item.OwnerID); err != nil {
-        return nil, err
+    item, err := s.repo.FindByID(ctx, id)
+    if err != nil {
+        return errors.NotFound()
     }
-    ...
+    if err := auth.CanMutate(actor, item.OwnerID); err != nil {
+        return errors.Forbidden()
+    }
+    return s.repo.Delete(ctx, id)
+}
+
+// Domain data — controller passes userID, no auth check needed
+func (s *exampleService) Create(ctx context.Context, userID string, body req.CreateReq) (*models.Example, *errors.AppError) {
+    item := &models.Example{Name: body.Name, OwnerID: userID}
+    return item, s.repo.Create(ctx, item)
 }
 ```
 
@@ -65,7 +88,7 @@ ok, _ := e.Enforce(userID, resource, action)
 ```
 
 **Recommendations:**
-- Simple checks (role + ownership): keep inline — no external dependency needed
+- Simple checks (role + ownership): keep inline with `Actor` + `CanMutate`/`CanRead`
 - Complex RBAC/ABAC: `github.com/casbin/casbin/v2` — flexible model-based authorization
 - Alternative: `github.com/ory/keto` — Ory's access control server (gRPC)
 - For multi-tenant: add tenant scoping to all policy checks

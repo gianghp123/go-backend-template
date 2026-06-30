@@ -10,6 +10,7 @@
 | `errors/` | `AppError` with predefined `BadRequest`, `NotFound`, etc. (accepts optional messages) |
 | `response/` | Standardized API response envelope (`BaseResponse[T]`) and pagination helpers |
 | `logger/` | Logger singleton pattern (README only — implement with your logger) |
+| `policy/` | Authorization: `Actor`, `ActorFromContext`, `CanMutate`, `CanRead` (see `internal/auth/README.md`) |
 
 ## Guidelines
 

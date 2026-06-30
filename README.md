@@ -49,14 +49,14 @@ make up
 
 | To swap | Edit |
 |---------|------|
-| Auth | Implement `IAuthProvider` interface (see `internal/auth/README.md`) |
+| Auth | Implement `AuthProvider` interface (see `internal/auth/README.md`) |
 | Database | Replace GORM in `internal/database/` with SQLx, Bun, etc. |
-| Storage | Implement `IStorageProvider` interface (see `internal/storage/README.md`) |
+| Storage | Implement `StorageProvider` interface (see `internal/storage/README.md`) |
 | Logger | Replace Zap in `core/logger/` with slog, logrus, etc. |
 
 ## Key patterns
 
 - **DTOs** — request/response structs in `dtos/req/` and `dtos/res/`, models in `database/models/`
 - **Repos** — accept models + `database.Query`, return models + stdlib errors, never DTOs
-- **Services** — accept DTOs, map ↔ models, return `*errors.AppError`, extract user claims via `utils.GetCtx[T any]`
+- **Services** — accept only the params they need (controller passes `userID` as param), use `policy.ActorFromContext` for auth checks, return `*errors.AppError`
 - **Controllers** — bind input, call service, write response via `response.Success/Fail`

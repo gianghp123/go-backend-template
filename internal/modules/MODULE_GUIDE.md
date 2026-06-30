@@ -5,22 +5,22 @@
 ```
 internal/modules/<name>/
 ├── controllers/
-│   ├── <name>.controller.go       # User-facing handlers
-│   └── <name>-admin.controller.go # Admin handlers (same service)
+│   ├── controller.go              # User-facing handlers
+│   └── admin_controller.go        # Admin handlers (same service)
 ├── services/
-│   ├── <name>.service.go          # Business logic — returns models, no DTO mapping
-│   └── <name>.service_test.go     # Table-driven tests with mock interfaces
+│   ├── service.go                 # Business logic — returns models, no DTO mapping
+│   └── service_test.go            # Table-driven tests with mock implementations
 ├── repositories/
-│   └── <name>.repo.go             # Repository implementation (interface in database/ports/)
+│   └── repository.go              # Repository implementation (interface in database/ports/)
 ├── dtos/
 │   ├── req/                       # Request DTOs (API layer)
 │   └── res/                       # Response DTOs (API layer)
-└── <name>.module.go               # Route registration
+└── module.go                      # Route registration
 ```
 
 Model/entity structs live in `internal/database/models/`, separate from DTOs.
 
-Port **interfaces** live in `internal/database/ports/`.
+Port **interfaces** live in `internal/database/ports/` (e.g., `ExampleRepository`, `Provider`).
 Repository **implementations** live in `internal/modules/<name>/repositories/`.
 The **Provider** lives in `internal/database/provider/` — singleton repo accessor.
 The **UnitOfWork** lives in `internal/database/unit-of-work/` — transaction coordinator.
@@ -28,9 +28,9 @@ The **UnitOfWork** lives in `internal/database/unit-of-work/` — transaction co
 ## Data Flow
 
 ```
-Controller  →  binds req DTO, calls service, maps model → res DTO
+Controller  →  binds req DTO, extracts userID from context via utils.GetCtx, calls service, maps model → res DTO
     ↓
-Service     →  applies policy, returns Model + AppError
+Service     →  enforces policy when needed (policy.ActorFromContext + policy.CanMutate/CanRead), returns Model + AppError
     ↓
 Provider    →  provides Repository instances (singleton)
  UnitOfWork →  wraps work in a DB transaction (optional)
@@ -83,9 +83,10 @@ type ExampleRes struct {
 
 ## Step 3: Define the Repository Interface
 
-Repository interfaces live in `internal/database/ports/`, one file per module:
+Repository interfaces live in `internal/database/ports/`, one file per module.
+Go convention: no `I` prefix on interfaces. Name by what it does.
 
-**`internal/database/ports/example.repo.interface.go`:**
+**`internal/database/ports/example.repository.go`:**
 ```go
 package ports
 
@@ -96,7 +97,7 @@ import (
     "github.com/your-org/your-project/internal/database/models"
 )
 
-type IExampleRepo interface {
+type ExampleRepository interface {
     FindAll(ctx context.Context, q *database.Query) (*response.PaginatedResult[*models.Example], error)
     FindByID(ctx context.Context, id uint) (*models.Example, error)
     Create(ctx context.Context, m *models.Example) error
@@ -124,9 +125,13 @@ import (
 )
 
 // Ensure compile-time interface compliance
-var _ ports.IExampleRepo = (*Repo)(nil)
+var _ ports.ExampleRepository = (*Repo)(nil)
 
 type Repo struct { db *gorm.DB }
+
+func NewRepo(db *gorm.DB) *Repo {
+    return &Repo{db: db}
+}
 
 func (r *Repo) FindAll(ctx context.Context, q *database.Query) (*response.PaginatedResult[*models.Example], error) {
     var examples []*models.Example
@@ -147,57 +152,132 @@ After implementing, register the repository in the Provider (see Step 9).
 
 ## Step 5: Write the Service
 
-Services accept DTOs, build queries, enforce policy, and return models directly.
-The repo field uses the interface from `database/ports/`:
+Services are **pure** — they accept only the params they need for pure business logic.
+The controller extracts `userID` from context and passes it as a param when the service needs domain data.
+The service calls `policy.ActorFromContext(ctx)` **only** when it needs to enforce authorization.
+The repo field uses the interface from `database/ports/`.
+Constructor returns the concrete struct, not the interface.
 
 ```go
-type Service struct {
-    repo ports.IExampleRepo
+// Interface — exported for controllers to depend on
+type ExampleService interface {
+    Create(ctx context.Context, userID string, body req.CreateReq) (*models.Example, *coreError.AppError)
+    List(ctx context.Context, userID string, q req.ListQuery) (*response.PaginatedResult[*models.Example], *coreError.AppError)
+    GetByID(ctx context.Context, id uint) (*models.Example, *coreError.AppError)
+    Delete(ctx context.Context, id uint) *coreError.AppError
 }
 
-func NewService(repo ports.IExampleRepo) *Service {
-    return &Service{repo: repo}
+// Struct — unexported, returned as concrete type
+type exampleService struct {
+    repo ports.ExampleRepository
 }
 
-func (s *Service) List(ctx context.Context, q req.ListQuery) (*response.PaginatedResult[*models.Example], *coreError.AppError) {
-    result, err := s.repo.FindAll(ctx, q.ToQuery())
+func NewService(repo ports.ExampleRepository) *exampleService {
+    return &exampleService{repo: repo}
+}
+
+// Create — userID is domain data, controller passes it
+func (s *exampleService) Create(ctx context.Context, userID string, body req.CreateReq) (*models.Example, *coreError.AppError) {
+    item := &models.Example{
+        Name:    body.Name,
+        OwnerID: userID,
+    }
+    if err := s.repo.Create(ctx, item); err != nil {
+        return nil, coreError.Internal("failed to create example")
+    }
+    return item, nil
+}
+
+// List — userID scopes the query, controller passes it
+func (s *exampleService) List(ctx context.Context, userID string, q req.ListQuery) (*response.PaginatedResult[*models.Example], *coreError.AppError) {
+    dbQuery := q.ToQuery()
+    dbQuery.SetFilter("owner_id", userID)
+    result, err := s.repo.FindAll(ctx, dbQuery)
     if err != nil {
         return nil, coreError.Internal("failed to list examples")
     }
     return result, nil
 }
 
-func (s *Service) GetByID(ctx context.Context, body req.GetExampleReq) (*models.Example, *coreError.AppError) {
-    userID := utils.GetCtx[string](ctx, enums.ContextKeyUserID)
-    item, err := s.repo.FindByID(ctx, body.ID)
+// GetByID — needs auth check, so uses ActorFromContext + CanRead
+func (s *exampleService) GetByID(ctx context.Context, id uint) (*models.Example, *coreError.AppError) {
+    actor, err := policy.ActorFromContext(ctx)
+    if err != nil {
+        return nil, coreError.Unauthorized()
+    }
+    item, err := s.repo.FindByID(ctx, id)
     if err != nil {
         if errors.Is(err, coreError.ErrNotFound) { return nil, coreError.NotFound() }
         return nil, coreError.Internal(err.Error())
     }
-
-    if item.OwnerID != userID {
-        return nil, coreError.Forbidden("not authorized to access this resource")
+    if err := policy.CanRead(actor, item.OwnerID); err != nil {
+        return nil, coreError.Forbidden()
     }
-
     return item, nil
+}
+
+// Delete — needs auth check, so uses ActorFromContext + CanMutate
+func (s *exampleService) Delete(ctx context.Context, id uint) *coreError.AppError {
+    actor, err := policy.ActorFromContext(ctx)
+    if err != nil {
+        return coreError.Unauthorized()
+    }
+    item, err := s.repo.FindByID(ctx, id)
+    if err != nil {
+        if errors.Is(err, coreError.ErrNotFound) { return coreError.NotFound() }
+        return coreError.Internal(err.Error())
+    }
+    if err := policy.CanMutate(actor, item.OwnerID); err != nil {
+        return coreError.Forbidden()
+    }
+    if err := s.repo.Delete(ctx, id); err != nil {
+        return coreError.Internal("failed to delete example")
+    }
+    return nil
 }
 ```
 
-Key patterns:
+Key rules:
+- **Create/List** — `userID` is domain data, controller passes it as a param. Service never extracts from context.
+- **GetByID/Update/Delete** — needs authorization, service calls `policy.ActorFromContext(ctx)` + `policy.CanRead`/`policy.CanMutate`
 - Services return `(*model, *coreError.AppError)` — model types, not DTOs
 - Controllers are responsible for mapping models to response DTOs
 - Service maps repo errors to `coreError.*` (AppError) via `errors.Is(err, coreError.ErrNotFound)` → `coreError.NotFound()`
-- Services no longer call `utils.MapToDTO` / `utils.MapToDTOs` — that happens in controllers
-- `utils.GetCtx[T any](ctx, key)` extracts user claims from context (set by middleware)
-- Use the extracted `userID` from context to enforce ownership directly in the service
-- Service functions accept DTOs (not separate params), including `GetByID` via `req.GetExampleReq`
+- Services never call `utils.GetCtx` or `utils.MapToDTO` — those are controller concerns
+- Service functions accept the minimum params needed — this makes them reusable across different controllers
+- Constructor (`NewService`) returns concrete struct `*exampleService`, not the interface — callers accept the interface
 
 ## Step 6: Write Controllers
 
-Controllers bind request DTOs, call services, map models to response DTOs, and write HTTP responses:
+Controllers bind request DTOs, extract `userID` from context, call services, map models to response DTOs, and write HTTP responses.
+Controllers accept the service **interface** (not concrete type) for testability:
 
 ```go
-type Controller struct { Service services.IExampleService }
+type Controller struct { svc ExampleService }
+
+func (h *Controller) Create(c *gin.Context) {
+    var body req.CreateReq
+    if err := c.ShouldBindJSON(&body); err != nil {
+        c.JSON(http.StatusBadRequest, response.Fail(coreError.BadRequest(err.Error())))
+        return
+    }
+
+    // Controller extracts userID from context — service doesn't
+    userID := utils.GetCtx[string](c.Request.Context(), enums.ContextKeyUserID)
+
+    item, appErr := h.svc.Create(c.Request.Context(), userID, body)
+    if appErr != nil {
+        c.JSON(appErr.Code, response.Fail(appErr))
+        return
+    }
+
+    var result res.ExampleRes
+    if err := utils.MapToDTO(item, &result); err != nil {
+        c.JSON(http.StatusInternalServerError, response.Fail(coreError.Internal("failed to map")))
+        return
+    }
+    c.JSON(http.StatusOK, response.Success(result))
+}
 
 func (h *Controller) List(c *gin.Context) {
     var q req.ListQuery
@@ -206,7 +286,10 @@ func (h *Controller) List(c *gin.Context) {
         return
     }
 
-    result, appErr := h.Service.List(c.Request.Context(), q)
+    // Controller extracts userID — service receives it as param
+    userID := utils.GetCtx[string](c.Request.Context(), enums.ContextKeyUserID)
+
+    result, appErr := h.svc.List(c.Request.Context(), userID, q)
     if appErr != nil {
         c.JSON(appErr.Code, response.Fail(appErr))
         return
@@ -214,10 +297,9 @@ func (h *Controller) List(c *gin.Context) {
 
     var examples []res.ExampleRes
     if err := utils.MapToDTOs(result.Data, &examples); err != nil {
-        c.JSON(http.StatusInternalServerError, response.Fail(coreError.Internal("failed to map examples")))
+        c.JSON(http.StatusInternalServerError, response.Fail(coreError.Internal("failed to map")))
         return
     }
-
     c.JSON(http.StatusOK, response.Success(response.PaginatedResponse[res.ExampleRes]{Data: examples, Meta: result.Meta}))
 }
 
@@ -228,7 +310,8 @@ func (h *Controller) GetByID(c *gin.Context) {
         return
     }
 
-    item, appErr := h.Service.GetByID(c.Request.Context(), body)
+    // Auth is handled inside the service via policy.ActorFromContext — controller just passes the ID
+    item, appErr := h.svc.GetByID(c.Request.Context(), body.ID)
     if appErr != nil {
         c.JSON(appErr.Code, response.Fail(appErr))
         return
@@ -236,10 +319,9 @@ func (h *Controller) GetByID(c *gin.Context) {
 
     var result res.ExampleRes
     if err := utils.MapToDTO(item, &result); err != nil {
-        c.JSON(http.StatusInternalServerError, response.Fail(coreError.Internal("failed to map example")))
+        c.JSON(http.StatusInternalServerError, response.Fail(coreError.Internal("failed to map")))
         return
     }
-
     c.JSON(http.StatusOK, response.Success(result))
 }
 ```
@@ -249,7 +331,7 @@ Model-to-DTO mapping happens in controllers — services return plain models.
 Admin controllers share the same service:
 
 ```go
-type AdminController struct { Service *services.Service }
+type AdminController struct { svc ExampleService }
 ```
 
 ## Step 7: Register Routes
@@ -262,9 +344,9 @@ import (
 )
 
 func RegisterRoutes(rg *gin.RouterGroup, p *provider.Provider, authMw, adminMw gin.HandlerFunc) {
-    svc := services.NewExampleService(p.Example())
-    h := &controllers.Controller{Service: svc}
-    admin := &controllers.AdminController{Service: svc}
+    svc := services.NewService(p.Example())
+    h := controllers.NewController(svc)
+    admin := controllers.NewAdminController(svc)
     rg.GET("/examples", authMw, h.List)
     rg.DELETE("/examples/:id", authMw, adminMw, admin.Delete)
 }
@@ -305,20 +387,20 @@ import (
     "github.com/your-org/your-project/internal/modules/example/repositories"
 )
 
-var _ ports.IProvider = (*Provider)(nil)
+var _ ports.Provider = (*Provider)(nil)
 
 type Provider struct {
     db          *gorm.DB
-    exampleRepo ports.IExampleRepo
+    exampleRepo ports.ExampleRepository
 }
 
 func New(db *gorm.DB) *Provider {
     return &Provider{db: db}
 }
 
-func (p *Provider) Example() ports.IExampleRepo {
+func (p *Provider) Example() ports.ExampleRepository {
     if p.exampleRepo == nil {
-        p.exampleRepo = repositories.NewExampleRepo(p.db)
+        p.exampleRepo = repositories.NewRepo(p.db)
     }
     return p.exampleRepo
 }
@@ -333,10 +415,10 @@ p := provider.New(db)
 uow := unitofwork.New(db)
 
 // Non-transactional
-svc := example_service.NewExampleService(p.Example())
+svc := services.NewService(p.Example())
 
 // Transactional
-uow.Do(ctx, func(txCtx context.Context, p ports.IProvider) error {
+uow.Do(ctx, func(txCtx context.Context, p ports.Provider) error {
     example, err := p.Example().FindByID(txCtx, id)
     // ...
     return p.Example().Update(txCtx, example)
@@ -350,8 +432,12 @@ uow.Do(ctx, func(txCtx context.Context, p ports.IProvider) error {
 | Model | PascalCase | `Example` |
 | DTO req | PascalCase | `CreateReq`, `ListQuery` |
 | DTO res | PascalCase | `ExampleRes` |
-| Service | `XxxService` | `ExampleService` |
-| Controller | `XxxController` | `ExampleController` |
-| Admin controller | `XxxAdminController` | `ExampleAdminController` |
-| Repo interface | `IXxxRepo` | `IExampleRepo` |
+| Service interface | PascalCase (no `I` prefix) | `ExampleService` |
+| Service struct | unexported | `exampleService` |
+| Service constructor | returns concrete struct | `NewService(...) *exampleService` |
+| Controller | PascalCase | `ExampleController` |
+| Admin controller | PascalCase | `ExampleAdminController` |
+| Repo interface | PascalCase (no `I` prefix) | `ExampleRepository` |
+| Repo struct | unexported | `Repo` |
+| Repo constructor | returns concrete struct | `NewRepo(...) *Repo` |
 | Mapper | `utils.MapToDTO` / `utils.MapToDTOs` | generic, in controller (or utils) |

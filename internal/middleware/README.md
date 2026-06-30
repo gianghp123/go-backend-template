@@ -3,7 +3,7 @@
 **Purpose:** HTTP middleware — request pipeline filters executed before handlers.
 
 **Common middleware:**
-- **Auth** — extracts Bearer token, calls `IAuthProvider.VerifyToken`, stores claims in context
+- **Auth** — extracts Bearer token, calls `AuthProvider.VerifyToken`, stores claims in context
 - **Role** — checks user role from context against required roles
 - Logging, rate limiting, CORS, recovery
 

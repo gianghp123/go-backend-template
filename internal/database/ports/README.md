@@ -4,13 +4,14 @@
 
 **Rules:**
 - Interfaces only, no implementations
-- One file per concern (e.g., `example.repo.interface.go`, `provider.go`, `unit_of_work.go`)
+- One file per concern (e.g., `example.repository.go`, `provider.go`, `unit_of_work.go`)
 - Never reference DTOs, HTTP, or framework types (e.g., `*gorm.DB`)
 - Consumers (services, handlers) depend on these ports, not on implementations
+- Go convention: no `I` prefix on interfaces — name by what it does
 
 ## Repository interface
 
-**`internal/database/ports/example.repo.interface.go`:**
+**`internal/database/ports/example.repository.go`:**
 ```go
 package ports
 
@@ -21,7 +22,7 @@ import (
     "github.com/your-org/your-project/internal/database/models"
 )
 
-type IExampleRepo interface {
+type ExampleRepository interface {
     FindAll(ctx context.Context, q *database.Query) (*response.PaginatedResult[*models.Example], error)
     FindByID(ctx context.Context, id uint) (*models.Example, error)
     Create(ctx context.Context, m *models.Example) error
@@ -36,8 +37,8 @@ type IExampleRepo interface {
 ```go
 package ports
 
-type IProvider interface {
-    Example() IExampleRepo
+type Provider interface {
+    Example() ExampleRepository
 }
 ```
 
@@ -49,8 +50,8 @@ package ports
 
 import "context"
 
-type IUnitOfWork interface {
-    Do(ctx context.Context, fn func(ctx context.Context, provider IProvider) error) error
+type UnitOfWork interface {
+    Do(ctx context.Context, fn func(ctx context.Context, provider Provider) error) error
 }
 ```
 

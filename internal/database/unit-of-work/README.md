@@ -2,7 +2,7 @@
 
 **Purpose:** GORM-specific UnitOfWork implementation — database transaction coordination.
 
-The `IUnitOfWork` and `IProvider` interfaces are defined in `internal/database/ports/`.
+The `UnitOfWork` and `Provider` interfaces are defined in `internal/database/ports/`.
 
 ## Implementation
 
@@ -17,7 +17,7 @@ import (
     "github.com/your-org/your-project/internal/database/provider"
 )
 
-var _ ports.IUnitOfWork = (*UnitOfWork)(nil)
+var _ ports.UnitOfWork = (*UnitOfWork)(nil)
 
 type UnitOfWork struct {
     db *gorm.DB
@@ -27,7 +27,7 @@ func New(db *gorm.DB) *UnitOfWork {
     return &UnitOfWork{db: db}
 }
 
-func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context, p ports.IProvider) error) error {
+func (u *UnitOfWork) Do(ctx context.Context, fn func(ctx context.Context, p ports.Provider) error) error {
     return u.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
         return fn(ctx, provider.New(tx))
     })
@@ -38,7 +38,7 @@ Usage:
 ```go
 uow := unitofwork.New(db)
 
-err := uow.Do(ctx, func(txCtx context.Context, p ports.IProvider) error {
+err := uow.Do(ctx, func(txCtx context.Context, p ports.Provider) error {
     example, err := p.Example().FindByID(txCtx, id)
     if err != nil {
         return err // rollback
